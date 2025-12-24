@@ -1,0 +1,897 @@
+/*
+ * BASE HEARTBEAT v6.2 - CARBON STEEL FIX
+ * * FEATURES:
+ * 1. Corrected "Steel" Blueprint name.
+ * 2. Paged Debug & Status Displays.
+ * 3. Role Separation ([AutoSlave] for Steel).
+ */
+
+const string LCD_NAME = "Status LCD";
+const string DEBUG_LCD_NAME = "Debug LCD"; 
+const double THRESHOLD = 0.40; 
+const int CHECK_INTERVAL = 60; 
+
+// --- MASTER CATALOG ---
+List<ItemReq> CATALOG = new List<ItemReq>
+{
+    // === [AutoAssembler] BULK ===
+    new ItemReq("SteelPlate",       10000, "[AutoAssembler]"),
+    new ItemReq("InteriorPlate",    6000,  "[AutoAssembler]"),
+    new ItemReq("SmallTube",        5000,  "[AutoAssembler]"),
+    new ItemReq("LargeTube",        2000,  "[AutoAssembler]"),
+    new ItemReq("MetalGrid",        4000,  "[AutoAssembler]"),
+    new ItemReq("GirderComponent",  2000,  "[AutoAssembler]"),
+    new ItemReq("SteelGirder",      1500,  "[AutoAssembler]"),
+    new ItemReq("BulletproofGlass", 2000,  "[AutoAssembler]"),
+    new ItemReq("ConstructionComponent", 8000, "[AutoAssembler]"),
+    
+    // === [AutoSlave] TECH & ALLOYS ===
+    // NEW: Carbon Steel (Matches your queue report)
+    new ItemReq("Steel", 5000, "[AutoSlave]"), 
+
+    new ItemReq("MotorComponent",     3000, "[AutoSlave]"),
+    new ItemReq("ComputerComponent",  2000, "[AutoSlave]"),
+    new ItemReq("RadioCommunicationComponent", 100, "[AutoSlave]"),
+    new ItemReq("DetectorComponent",  1000, "[AutoSlave]"),
+    new ItemReq("Display",            1500, "[AutoSlave]"),
+    new ItemReq("ExplosivesComponent", 100, "[AutoSlave]"),
+    new ItemReq("ThrustComponent",    1000, "[AutoSlave]"),
+    new ItemReq("ReactorComponent",   500,  "[AutoSlave]"),
+    new ItemReq("GravityGeneratorComponent", 500, "[AutoSlave]"),
+    new ItemReq("MedicalComponent",   50,   "[AutoSlave]"),
+    new ItemReq("SolarCell",          1500, "[AutoSlave]"),
+    new ItemReq("PowerCell",          250,  "[AutoSlave]"),
+
+    // MODDED / TIER 2
+    new ItemReq("TitaniumPlate",      5000, "[AutoSlave]"),
+    new ItemReq("CompositePlate",     3000, "[AutoSlave]"),
+    new ItemReq("TitaniumTube",       2000, "[AutoSlave]"),
+    new ItemReq("OctocoreComponent",  500,  "[AutoSlave]"),
+    new ItemReq("AdvancedMotor",      2000, "[AutoSlave]"),
+    new ItemReq("Circuit",            1000, "[AutoSlave]"),
+    new ItemReq("CPU",                500,  "[AutoSlave]"),
+    new ItemReq("Magnet",             500,  "[AutoSlave]"),
+    new ItemReq("Superconductor",     450,  "[AutoSlave]"),
+    new ItemReq("UltraConductor",     150,  "[AutoSlave]"),
+    new ItemReq("Heatsink",           300,  "[AutoSlave]"),
+    new ItemReq("LED",                200,  "[AutoSlave]"),
+    new ItemReq("Kevlar",             200,  "[AutoSlave]"),
+    new ItemReq("Nylon",              300,  "[AutoSlave]"),
+    new ItemReq("Polycarbonate",      500,  "[AutoSlave]"),
+    new ItemReq("Tyre",               500,  "[AutoSlave]"),
+    new ItemReq("SiTyre",             50,   "[AutoSlave]"),
+    new ItemReq("CopperWire",         1000, "[AutoSlave]"),
+    new ItemReq("GoldWire",           1000, "[AutoSlave]"),
+    new ItemReq("SteelWire",          400,  "[AutoSlave]"),
+    new ItemReq("Optic",              200,  "[AutoSlave]"),
+    
+    // CONVERSIONS
+    new ItemReq("OilToPlastic",       2000, "[AutoSlave]"),
+    new ItemReq("OilToRubber",        2000, "[AutoSlave]"),
+    new ItemReq("IceToPerchlorate",   3000, "[AutoSlave]"),
+
+    // === [FuelAssembly] CHEMIST ===
+    new ItemReq("Kerosene",           2000, "[FuelAssembly]"),
+    new ItemReq("Gunpowder",          10000, "[FuelAssembly]"),
+    new ItemReq("Flashpowder",        10000, "[FuelAssembly]"),
+};
+
+// --- TRANSLATION LAYER ---
+Dictionary<string, string> ALIASES = new Dictionary<string, string>
+{
+    {"Plastic", "OilToPlastic"},
+    {"Rubber", "OilToRubber"},
+    {"PotassiumPerchlorate", "IceToPerchlorate"},
+    {"Nitre", "IceToPerchlorate"},
+    {"AdvancedCircuit", "Circuit"},
+    {"NeodymiumMagnet", "Magnet"},
+    {"FlashPowder", "Flashpowder"},
+    {"10GHzCPU", "OctocoreComponent"},
+    {"SuitPowerbank", "SuitPowerbank_2"},
+    {"Powerbank", "SuitPowerbank_2"}
+    // Removed "Steel" alias because Inventory Name == Blueprint Name
+};
+
+// --- GLOBALS ---
+Dictionary<string, List<IMyAssembler>> assemblers = new Dictionary<string, List<IMyAssembler>>();
+List<IMyTerminalBlock> storage = new List<IMyTerminalBlock>();
+Dictionary<string, double> inventory = new Dictionary<string, double>();
+Dictionary<string, double> queuedCounts = new Dictionary<string, double>(); 
+
+// Vitals Globals
+List<IMyBatteryBlock> batteries = new List<IMyBatteryBlock>();
+List<IMyGasTank> gasTanks = new List<IMyGasTank>();
+List<IMyPowerProducer> engines = new List<IMyPowerProducer>();
+
+int cycle = 0;
+int debugPage = 0;
+int debugTimer = 0;
+
+public Program()
+{
+    Runtime.UpdateFrequency = UpdateFrequency.Update100;
+    Init();
+}
+
+void Init()
+{
+    assemblers.Clear();
+    List<IMyAssembler> all = new List<IMyAssembler>();
+    GridTerminalSystem.GetBlocksOfType(all, a => a.IsSameConstructAs(Me));
+    
+    assemblers["[AutoAssembler]"] = all.Where(a => a.CustomName.Contains("[AutoAssembler]")).ToList();
+    assemblers["[AutoSlave]"] = all.Where(a => a.CustomName.Contains("[AutoSlave]")).ToList();
+    assemblers["[FuelAssembly]"] = all.Where(a => a.CustomName.Contains("[FuelAssembly]")).ToList();
+    
+    storage.Clear();
+    GridTerminalSystem.GetBlocksOfType(storage, b => b.IsSameConstructAs(Me) && b.HasInventory);
+    
+    batteries.Clear();
+    GridTerminalSystem.GetBlocksOfType(batteries, b => b.IsSameConstructAs(Me));
+    
+    gasTanks.Clear();
+    GridTerminalSystem.GetBlocksOfType(gasTanks, b => b.IsSameConstructAs(Me));
+
+    engines.Clear();
+    GridTerminalSystem.GetBlocksOfType(engines, b => b.IsSameConstructAs(Me) && b.BlockDefinition.SubtypeId.Contains("Engine"));
+}
+
+public void Main(string argument, UpdateType updateSource)
+{
+    if (argument.ToUpper() == "RESET") {
+        foreach (var list in assemblers.Values) foreach (var asm in list) asm.ClearQueue();
+        queuedCounts.Clear(); Echo("!!! WIPED !!!"); return; 
+    }
+
+    cycle++;
+    if (cycle % 300 == 0) Init(); 
+    
+    ScanInventory();
+    ScanQueues();
+    
+    if (cycle % CHECK_INTERVAL == 0) ManageProduction();
+    
+    debugTimer++;
+    if(debugTimer > 40) { 
+        debugTimer = 0;
+        debugPage++;
+    }
+    
+    UpdateStatusDisplay();
+    UpdateDebugDisplay();
+}
+
+void ScanInventory()
+{
+    inventory.Clear();
+    foreach (var block in storage) {
+        for (int i = 0; i < block.InventoryCount; i++) {
+            var inv = block.GetInventory(i);
+            if (inv == null) continue;
+            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            inv.GetItems(items);
+            foreach (var item in items) {
+                string id = item.Type.SubtypeId;
+                double amt = (double)item.Amount;
+                AddInv(id, amt);
+                if (ALIASES.ContainsKey(id)) AddInv(ALIASES[id], amt);
+                if (!id.EndsWith("Component")) AddInv(id + "Component", amt);
+            }
+        }
+    }
+}
+
+void AddInv(string key, double val) {
+    if (inventory.ContainsKey(key)) inventory[key] += val;
+    else inventory[key] = val;
+}
+
+void ScanQueues() {
+    queuedCounts.Clear();
+    foreach (var asmList in assemblers.Values) {
+        foreach (var asm in asmList) {
+            if(!asm.IsWorking) continue;
+            var queue = new List<MyProductionItem>();
+            asm.GetQueue(queue);
+            foreach (var item in queue) {
+                string bp = item.BlueprintId.SubtypeName;
+                double amt = (double)item.Amount;
+                if (queuedCounts.ContainsKey(bp)) queuedCounts[bp] += amt;
+                else queuedCounts[bp] = amt;
+            }
+        }
+    }
+}
+
+void ManageProduction() {
+    foreach (var req in CATALOG) {
+        double current = inventory.ContainsKey(req.ID) ? inventory[req.ID] : 0;
+        if (current >= req.Target) continue;
+        double pending = queuedCounts.ContainsKey(req.ID) ? queuedCounts[req.ID] : 0;
+        if (pending > 10) continue; 
+        
+        int needed = req.Target - (int)current;
+        int batch = Math.Min(needed, 100); 
+        
+        if (Queue(req.ID, batch, req.Tag)) {
+            if (queuedCounts.ContainsKey(req.ID)) queuedCounts[req.ID] += batch;
+            else queuedCounts[req.ID] = batch;
+        }
+    }
+}
+
+bool Queue(string name, int amount, string tag) {
+    if (!assemblers.ContainsKey(tag) || assemblers[tag].Count == 0) return false;
+    IMyAssembler best = null; int minQ = int.MaxValue;
+    foreach (var asm in assemblers[tag]) {
+        if (!asm.IsWorking || !asm.IsFunctional) continue;
+        var q = new List<MyProductionItem>(); asm.GetQueue(q);
+        if (q.Count < minQ) { minQ = q.Count; best = asm; }
+    }
+    if (best == null) return false;
+    try {
+        var bp = MyDefinitionId.Parse($"MyObjectBuilder_BlueprintDefinition/{name}");
+        best.AddQueueItem(bp, (MyFixedPoint)amount);
+        return true;
+    } catch { return false; }
+}
+
+void UpdateStatusDisplay() {
+    var lcd = FindLCD(LCD_NAME);
+    if (lcd == null) return;
+    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+    
+    double totalBatt = 0, maxBatt = 0;
+    foreach(var b in batteries) { totalBatt += b.CurrentStoredPower; maxBatt += b.MaxStoredPower; }
+    double battPct = maxBatt > 0 ? (totalBatt / maxBatt) * 100 : 0;
+    
+    double h2 = 0, o2 = 0;
+    foreach(var t in gasTanks) {
+        if(t.BlockDefinition.SubtypeId.Contains("Hydrogen")) h2 += t.FilledRatio;
+        else o2 += t.FilledRatio;
+    }
+    if(gasTanks.Count > 0) { h2 /= gasTanks.Count(t => t.BlockDefinition.SubtypeId.Contains("Hydrogen")); h2*=100; }
+    
+    double fuel = inventory.ContainsKey("Kerosene") ? inventory["Kerosene"] : 0;
+    double canvas = inventory.ContainsKey("Canvas") ? inventory["Canvas"] : 0;
+    double ice = inventory.ContainsKey("Ice") ? inventory["Ice"] : 0;
+
+    StringBuilder sb = new StringBuilder();
+    sb.AppendLine("╔═ BASE VITALS ═══════════════╗");
+    sb.AppendLine($"║ PWR: {DrawBar(battPct)} {battPct:F0}%");
+    sb.AppendLine($"║ H2:  {DrawBar(h2)} {h2:F0}%");
+    sb.AppendLine("╚═════════════════════════════╝");
+    sb.AppendLine($"FUEL STORES:");
+    sb.AppendLine($" Kerosene: {fuel:N0} L");
+    sb.AppendLine($" Ice:      {ice:N0} kg");
+    sb.AppendLine($" Canvas:   {canvas:N0}");
+    sb.AppendLine();
+    sb.AppendLine("CRITICAL LOW STOCK:");
+    var low = CATALOG
+        .Where(c => (inventory.ContainsKey(c.ID) ? inventory[c.ID] : 0) < c.Target * THRESHOLD)
+        .OrderBy(c => (inventory.ContainsKey(c.ID) ? inventory[c.ID] : 0) / (double)c.Target)
+        .Take(6);
+    foreach (var item in low) {
+        double curr = inventory.ContainsKey(item.ID) ? inventory[item.ID] : 0;
+        string n = item.ID.Length > 12 ? item.ID.Substring(0, 12) : item.ID;
+        sb.AppendLine($"! {n,-12} {curr,4}/{item.Target,-4}");
+    }
+    lcd.WriteText(sb.ToString());
+}
+
+void UpdateDebugDisplay() {
+    var lcd = FindLCD(DEBUG_LCD_NAME);
+    if (lcd == null) return;
+    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+    
+    var allItems = inventory.OrderBy(x => x.Key).ToList();
+    int pageSize = 18;
+    int totalPages = (int)Math.Ceiling((double)allItems.Count / pageSize);
+    if (debugPage >= totalPages) debugPage = 0;
+    
+    var pageItems = allItems.Skip(debugPage * pageSize).Take(pageSize);
+
+    StringBuilder sb = new StringBuilder();
+    sb.AppendLine($"╔═ DEBUG INV ═══════ PAGE {debugPage+1}/{totalPages} ╗");
+    foreach(var kvp in pageItems) {
+        string name = kvp.Key.Length > 18 ? kvp.Key.Substring(0,18) : kvp.Key;
+        sb.AppendLine($" {name,-18} : {kvp.Value:N0}");
+    }
+    lcd.WriteText(sb.ToString());
+}
+
+string DrawBar(double pct) {
+    int bars = (int)(pct / 10);
+    return $"[{new string('|', bars).PadRight(10, '.')}]";
+}
+
+IMyTextSurface FindLCD(string name) {
+    var b = GridTerminalSystem.GetBlockWithName(name);
+    if (b is IMyTextSurface) return (IMyTextSurface)b;
+    if (b is IMyTextSurfaceProvider) return ((IMyTextSurfaceProvider)b).GetSurface(0);
+    return null;
+}
+
+public class ItemReq {
+    public string ID; public int Target; public string Tag;
+    public ItemReq(string id, int t, string tag) { ID = id; Target = t; Tag = tag; }
+}
+
+
+
+/*
+ * LOGISTICS CORE v1.0
+ * * HANDLES: Sorting, Assembler Flushing, and Inventory Dashboard.
+ * * SETUP:
+ * - Load this in PB #2.
+ * - LCD Name: "Maintenance LCD"
+ * * BUTTON PANEL SETUP:
+ * - Button 1: Run PB -> Argument: "FLUSH"  (Force cleans assemblers)
+ * - Button 2: Run PB -> Argument: "CYCLE"  (Switches LCD View)
+ */
+
+// --- CONFIGURATION ---
+const string TAG_ORE   = "[Ore]";
+const string TAG_INGOT = "[Ingot]";
+const string TAG_COMP  = "[Comp]";
+const string TAG_AMMO  = "[Ammo]"; 
+const string TAG_TOOL  = "[Tool]"; 
+const string TAG_ICE   = "[Ice]";  
+const string TAG_FUEL  = "[Fuel]";
+const string TAG_IGNORE = "[Ignore]";
+
+const string LCD_NAME  = "Maintenance LCD";
+const int ITEMS_PER_TICK = 25; // Lowered to prevent lag, runs faster freq
+
+// --- GLOBALS ---
+int totalMoved = 0;
+int displayMode = 0; // 0=Dashboard, 1=Manifest
+List<string> displayModes = new List<string> { "DASHBOARD", "MANIFEST" };
+
+public Program()
+{
+    // Run very frequently for smooth sorting
+    Runtime.UpdateFrequency = UpdateFrequency.Update10; 
+}
+
+public void Main(string argument, UpdateType updateSource)
+{
+    // --- BUTTON COMMANDS ---
+    switch(argument.ToUpper())
+    {
+        case "CYCLE":
+            displayMode++;
+            if (displayMode >= displayModes.Count) displayMode = 0;
+            UpdateDisplay();
+            return;
+            
+        case "FLUSH":
+            VacuumAssemblers(true); // Force aggressive clean
+            return;
+    }
+
+    // --- MAIN LOOP ---
+    SortInventory();
+    
+    // Every 100 ticks (approx 1.5 sec), check assemblers gently
+    if (DateTime.Now.Second % 2 == 0) VacuumAssemblers(false);
+
+    UpdateDisplay();
+}
+
+void SortInventory()
+{
+    var destOre   = GetContainersWithTag(TAG_ORE);
+    var destIngot = GetContainersWithTag(TAG_INGOT);
+    var destComp  = GetContainersWithTag(TAG_COMP);
+    var destAmmo  = GetContainersWithTag(TAG_AMMO);
+    var destTool  = GetContainersWithTag(TAG_TOOL);
+    var destIce   = GetContainersWithTag(TAG_ICE);
+    var destFuel  = GetContainersWithTag(TAG_FUEL);
+
+    var sources = new List<IMyTerminalBlock>();
+    GridTerminalSystem.GetBlocksOfType<IMyTerminalBlock>(sources, b => 
+        b.IsSameConstructAs(Me) && b.HasInventory && IsSortable(b));
+
+    int tickMoved = 0;
+
+    foreach (var source in sources)
+    {
+        string name = source.CustomName;
+        for (int i = 0; i < source.InventoryCount; i++)
+        {
+            var inv = source.GetInventory(i);
+            if (inv.ItemCount == 0) continue;
+
+            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            inv.GetItems(items);
+
+            for (int j = items.Count - 1; j >= 0; j--)
+            {
+                var item = items[j];
+                string type = item.Type.TypeId.ToString();
+                string subtype = item.Type.SubtypeId.ToString();
+                
+                // PROTECTED ITEMS (Do not move active powerbanks)
+                if (subtype.Contains("Powerbank_")) continue;
+
+                bool moved = false;
+
+                // --- SORTING ---
+                if ((subtype.Contains("Petroleum") || subtype.Contains("Petrol") || 
+                     subtype.Contains("Kerosene") || subtype.Contains("Oil") || 
+                     subtype.Contains("Fuel") || subtype.Contains("Diesel")) && destFuel.Count > 0)
+                     moved = TryMove(inv, item, destFuel, name, TAG_FUEL);
+                     
+                else if (type.EndsWith("Ore")) {
+                    if (subtype == "Ice" && destIce.Count > 0) moved = TryMove(inv, item, destIce, name, TAG_ICE);
+                    else if (destOre.Count > 0) moved = TryMove(inv, item, destOre, name, TAG_ORE);
+                }
+                else if (type.EndsWith("Ingot")) {
+                    if (destIngot.Count > 0) moved = TryMove(inv, item, destIngot, name, TAG_INGOT);
+                }
+                else if (type.EndsWith("Component")) {
+                    if (destComp.Count > 0) moved = TryMove(inv, item, destComp, name, TAG_COMP);
+                }
+                else if (type.EndsWith("AmmoMagazine")) {
+                    if (destAmmo.Count > 0) moved = TryMove(inv, item, destAmmo, name, TAG_AMMO);
+                }
+                else if (type.EndsWith("PhysicalGunObject") || type.EndsWith("GasContainerObject") || type.EndsWith("OxygenContainerObject")) {
+                    if (destTool.Count > 0) moved = TryMove(inv, item, destTool, name, TAG_TOOL);
+                }
+
+                if (moved) { tickMoved++; totalMoved++; }
+                if (tickMoved >= ITEMS_PER_TICK) return; 
+            }
+        }
+    }
+}
+
+void VacuumAssemblers(bool force)
+{
+    // Finds assemblers hoarding ingots and pushes them back to [Ingot] storage
+    var destIngot = GetContainersWithTag(TAG_INGOT);
+    if (destIngot.Count == 0) return;
+
+    var assemblers = new List<IMyAssembler>();
+    GridTerminalSystem.GetBlocksOfType(assemblers, b => b.IsSameConstructAs(Me));
+
+    foreach(var asm in assemblers)
+    {
+        // Don't clean Fuel Assemblies (Chemists)
+        if (asm.CustomName.Contains("[FuelAssembly]")) continue;
+
+        var input = asm.GetInventory(0);
+        double fill = (double)input.CurrentVolume / (double)input.MaxVolume;
+
+        // CRITERIA: If >80% full (or forced), start cleaning until 50%
+        if (force || fill > 0.8)
+        {
+            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            input.GetItems(items);
+            foreach(var item in items)
+            {
+                // Only pull Ingots/Ore
+                if (item.Type.TypeId.ToString().EndsWith("Ingot") || item.Type.TypeId.ToString().EndsWith("Ore"))
+                {
+                    // Move to Storage
+                    foreach(var target in destIngot)
+                    {
+                        if (input.TransferItemTo(target.GetInventory(0), item)) break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void UpdateDisplay()
+{
+    var lcd = GridTerminalSystem.GetBlockWithName(LCD_NAME) as IMyTextSurface;
+    if (lcd == null) return;
+    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+    lcd.Font = "Monospace";
+    lcd.FontSize = 0.5f; 
+
+    StringBuilder sb = new StringBuilder();
+    sb.AppendLine($"╔═ LOGISTICS CORE ════ [{displayModes[displayMode][0]}] ╗");
+    sb.AppendLine($"║ Moved: {totalMoved,-8}           ║");
+    sb.AppendLine("╚═════════════════════════════╝");
+    sb.AppendLine();
+
+    if (displayMode == 0) // DASHBOARD
+    {
+        PrintProjectorStatus(sb);
+        sb.AppendLine();
+        sb.AppendLine("STORAGE CAPACITIES:");
+        PrintGroupStat(sb, "FUEL", TAG_FUEL);
+        PrintGroupStat(sb, "ORES", TAG_ORE);
+        PrintGroupStat(sb, "INGOTS", TAG_INGOT);
+        PrintGroupStat(sb, "COMPS", TAG_COMP);
+        PrintGroupStat(sb, "AMMO", TAG_AMMO);
+    }
+    else if (displayMode == 1) // MANIFEST
+    {
+        sb.AppendLine("INVENTORY MANIFEST:");
+        // Quick scan for display
+        Dictionary<string, double> counts = new Dictionary<string, double>();
+        var storage = new List<IMyTerminalBlock>();
+        GridTerminalSystem.GetBlocksOfType<IMyTerminalBlock>(storage, b => b.IsSameConstructAs(Me) && b.HasInventory);
+        foreach(var b in storage) {
+            for(int i=0; i<b.InventoryCount; i++) {
+                var items = new List<MyInventoryItem>();
+                b.GetInventory(i).GetItems(items);
+                foreach(var item in items) {
+                    string n = item.Type.SubtypeId;
+                    if(counts.ContainsKey(n)) counts[n] += (double)item.Amount; else counts[n] = (double)item.Amount;
+                }
+            }
+        }
+        foreach(var kvp in counts.OrderByDescending(x=>x.Value).Take(14)) {
+            sb.AppendLine($"{kvp.Key.PadRight(20).Substring(0,20)} : {kvp.Value:N0}");
+        }
+    }
+
+    lcd.WriteText(sb.ToString());
+}
+
+void PrintProjectorStatus(StringBuilder sb)
+{
+    var projectors = new List<IMyProjector>();
+    GridTerminalSystem.GetBlocksOfType(projectors, b => b.IsSameConstructAs(Me));
+    bool activeFound = false;
+    foreach(var proj in projectors)
+    {
+        if (proj.IsProjecting)
+        {
+            activeFound = true;
+            int total = proj.TotalBlocks;
+            int remaining = proj.RemainingBlocks;
+            int built = total - remaining;
+            double pct = total > 0 ? ((double)built / total) * 100 : 0;
+            sb.AppendLine($"PRJ: {proj.CustomName}");
+            int bars = (int)(pct / 5);
+            string barStr = new string('|', bars).PadRight(20, '.');
+            sb.AppendLine($" [{barStr}] {pct,3:F0}%");
+        }
+    }
+    if (!activeFound) sb.AppendLine("PROJECTOR: [ IDLE ]");
+}
+
+void PrintGroupStat(StringBuilder sb, string label, string tag)
+{
+    var list = GetContainersWithTag(tag);
+    if (list.Count == 0) { sb.AppendLine($" {label,-8} [ NOT FOUND ]"); return; }
+    double currentVolume = 0;
+    double maxVolume = 0;
+    foreach(var block in list)
+    {
+        var inv = block.GetInventory(0);
+        currentVolume += (double)inv.CurrentVolume;
+        maxVolume += (double)inv.MaxVolume;
+    }
+    double pct = maxVolume > 0 ? (currentVolume / maxVolume) * 100 : 0;
+    int bars = (int)(pct / 5); 
+    string barStr = new string('|', bars).PadRight(20, '.');
+    sb.AppendLine($" {label,-8} [{barStr}] {pct,3:F0}%");
+}
+
+bool TryMove(IMyInventory sourceInv, MyInventoryItem item, List<IMyTerminalBlock> targets, string currentName, string targetTag)
+{
+    if (currentName.Contains(targetTag)) return false;
+    foreach(var target in targets)
+    {
+        var destInv = target.GetInventory(0);
+        if (!destInv.IsFull) { if(sourceInv.TransferItemTo(destInv, item)) return true; }
+    }
+    return false;
+}
+
+List<IMyTerminalBlock> GetContainersWithTag(string tag)
+{
+    var list = new List<IMyTerminalBlock>();
+    GridTerminalSystem.GetBlocksOfType(list, b => b.IsSameConstructAs(Me) && b.HasInventory && b.CustomName.Contains(tag));
+    return list;
+}
+
+bool IsSortable(IMyTerminalBlock b)
+{
+    if (b.CustomName.Contains(TAG_IGNORE)) return false;
+    if (b.CustomName.Contains("Charger")) return false; 
+    if (b is IMyPowerProducer) return false;
+    if (b is IMyRefinery) return false;
+    if (b is IMyAssembler) return false;
+    if (b is IMyLargeTurretBase) return false;
+    if (b is IMyUserControllableGun) return false; 
+    if (b is IMyGasGenerator) return false;
+    if (b is IMyGasTank) return false;
+    return true; 
+}
+
+
+/*
+ * PRODUCTION QUEUE SCANNER
+ * * PURPOSE: Lists every item currently queued in every Assembler.
+ * * USE: Run once to see what is actually happening inside your machines.
+ */
+
+const string LCD_NAME = "Debug LCD"; // Optional: Name of an LCD to show results
+
+public Program()
+{
+    Runtime.UpdateFrequency = UpdateFrequency.Once; // Runs once immediately
+}
+
+public void Main(string argument, UpdateType updateSource)
+{
+    StringBuilder sb = new StringBuilder();
+    sb.AppendLine("=== ASSEMBLER QUEUE REPORT ===");
+    sb.AppendLine($"Time: {DateTime.Now.ToShortTimeString()}");
+    
+    // 1. Get Assemblers
+    var assemblers = new List<IMyAssembler>();
+    GridTerminalSystem.GetBlocksOfType(assemblers, b => b.IsSameConstructAs(Me));
+
+    if (assemblers.Count == 0)
+    {
+        sb.AppendLine("CRITICAL: No Assemblers Found!");
+    }
+    else
+    {
+        int totalQueued = 0;
+        
+        foreach (var asm in assemblers)
+        {
+            // 2. Get the Queue for this specific machine
+            var queue = new List<MyProductionItem>();
+            asm.GetQueue(queue);
+
+            // Only print if there is something there
+            if (queue.Count > 0)
+            {
+                sb.AppendLine($"\n[{asm.CustomName}]");
+                foreach (var item in queue)
+                {
+                    // This is the EXACT name the game uses (Blueprint SubtypeID)
+                    string bpName = item.BlueprintId.SubtypeName; 
+                    double amount = (double)item.Amount;
+                    
+                    sb.AppendLine($" - {bpName}: {amount:N0}");
+                    totalQueued++;
+                }
+            }
+        }
+
+        if (totalQueued == 0)
+        {
+            sb.AppendLine("\n[ ALL QUEUES EMPTY ]");
+        }
+    }
+
+    // 3. Output Results
+    string output = sb.ToString();
+    
+    // Print to the Programming Block Terminal (bottom right)
+    Echo(output);
+
+    // Print to LCD if it exists
+    var lcd = GridTerminalSystem.GetBlockWithName(LCD_NAME) as IMyTextSurface;
+    if (lcd != null)
+    {
+        lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+        lcd.Font = "Monospace";
+        lcd.FontSize = 0.6f;
+        lcd.WriteText(output);
+    }
+}
+
+
+
+
+
+
+########################## DEBUG SCRIPTS ##########################
+/*
+ * THE AUDITOR - MASTER INVENTORY LIST
+ * * PURPOSE: Scans grid and lists EVERY item by category.
+ * * FEATURES: Auto-scrolls long lists.
+ */
+
+const string LCD_NAME = "Inventory LCD";
+const int SCROLL_SPEED = 2; // Lines to scroll per update
+
+// --- GLOBALS ---
+Dictionary<string, double> comps = new Dictionary<string, double>();
+Dictionary<string, double> ingots = new Dictionary<string, double>();
+Dictionary<string, double> ores = new Dictionary<string, double>();
+Dictionary<string, double> ammo = new Dictionary<string, double>();
+Dictionary<string, double> tools = new Dictionary<string, double>();
+
+int scrollLine = 0;
+int maxLines = 0;
+
+public Program()
+{
+    Runtime.UpdateFrequency = UpdateFrequency.Update100; // Updates every ~1.6s
+}
+
+public void Main(string argument, UpdateType updateSource)
+{
+    ScanInventory();
+    UpdateDisplay();
+}
+
+void ScanInventory()
+{
+    // Clear previous counts
+    comps.Clear(); ingots.Clear(); ores.Clear(); ammo.Clear(); tools.Clear();
+
+    var blocks = new List<IMyTerminalBlock>();
+    GridTerminalSystem.GetBlocksOfType(blocks, b => b.IsSameConstructAs(Me) && b.HasInventory);
+
+    foreach (var block in blocks)
+    {
+        for (int i = 0; i < block.InventoryCount; i++)
+        {
+            var inv = block.GetInventory(i);
+            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            inv.GetItems(items);
+
+            foreach (var item in items)
+            {
+                string name = item.Type.SubtypeId;
+                string type = item.Type.TypeId.ToString();
+                double amount = (double)item.Amount;
+
+                if (type.EndsWith("Component")) AddTo(comps, name, amount);
+                else if (type.EndsWith("Ingot")) AddTo(ingots, name, amount);
+                else if (type.EndsWith("Ore")) AddTo(ores, name, amount);
+                else if (type.EndsWith("AmmoMagazine")) AddTo(ammo, name, amount);
+                else AddTo(tools, name, amount);
+            }
+        }
+    }
+}
+
+void AddTo(Dictionary<string, double> dict, string key, double val)
+{
+    if (dict.ContainsKey(key)) dict[key] += val;
+    else dict[key] = val;
+}
+
+void UpdateDisplay()
+{
+    var lcd = GridTerminalSystem.GetBlockWithName(LCD_NAME) as IMyTextSurface;
+    if (lcd == null) return;
+    lcd.ContentType = ContentType.TEXT_AND_IMAGE;
+    lcd.Font = "Monospace";
+    lcd.FontSize = 0.5f;
+
+    // Build the Full List
+    StringBuilder content = new StringBuilder();
+    
+    content.AppendLine("=== ORES ===");
+    foreach(var i in ores.OrderBy(x => x.Key)) content.AppendLine($" {i.Key,-18} : {i.Value:N0}");
+    content.AppendLine();
+
+    content.AppendLine("=== INGOTS ===");
+    foreach(var i in ingots.OrderBy(x => x.Key)) content.AppendLine($" {i.Key,-18} : {i.Value:N0}");
+    content.AppendLine();
+
+    content.AppendLine("=== COMPONENTS ===");
+    foreach(var i in comps.OrderBy(x => x.Key)) content.AppendLine($" {i.Key,-18} : {i.Value:N0}");
+    content.AppendLine();
+
+    content.AppendLine("=== AMMO & TOOLS ===");
+    foreach(var i in ammo.OrderBy(x => x.Key)) content.AppendLine($" {i.Key,-18} : {i.Value:N0}");
+    foreach(var i in tools.OrderBy(x => x.Key)) content.AppendLine($" {i.Key,-18} : {i.Value:N0}");
+
+    // Handle Scrolling
+    string[] lines = content.ToString().Split('\n');
+    maxLines = lines.Length;
+    
+    // Calculate visible lines based on font size (approx 34 lines for 0.5 font)
+    int visibleLines = 34; 
+    
+    if (maxLines > visibleLines)
+    {
+        scrollLine += SCROLL_SPEED;
+        if (scrollLine > maxLines - visibleLines) scrollLine = 0; // Reset to top
+    }
+    else
+    {
+        scrollLine = 0;
+    }
+
+    // Extract Visible Section
+    StringBuilder view = new StringBuilder();
+    view.AppendLine("╔═ MASTER INVENTORY ══════════╗");
+    for (int i = scrollLine; i < Math.Min(scrollLine + visibleLines, maxLines); i++)
+    {
+        view.AppendLine(lines[i].TrimEnd());
+    }
+    
+    // Add Footer if scrolling
+    if (maxLines > visibleLines) 
+        view.AppendLine($"... Scrolling ({scrollLine}/{maxLines - visibleLines}) ...");
+
+    lcd.WriteText(view.ToString());
+}
+
+
+/*
+ * ASSEMBLER DIAGNOSTIC TOOL
+ * * PURPOSE: force-lists ALL assemblers to debug visibility issues.
+ * * OUTPUT: Custom Data
+ */
+
+public Program()
+{
+    Runtime.UpdateFrequency = UpdateFrequency.Update100;
+}
+
+public void Main(string argument, UpdateType updateSource)
+{
+    var assemblers = new List<IMyAssembler>();
+    // Get ALL assemblers on this construct, even if broken/off
+    GridTerminalSystem.GetBlocksOfType(assemblers, b => b.IsSameConstructAs(Me));
+
+    StringBuilder sb = new StringBuilder();
+    sb.AppendLine($"=== DIAGNOSTIC REPORT ===");
+    sb.AppendLine($"Time: {DateTime.Now.ToShortTimeString()}");
+    sb.AppendLine($"Assemblers Found: {assemblers.Count}");
+    sb.AppendLine("=========================");
+    sb.AppendLine();
+
+    if (assemblers.Count == 0)
+    {
+        sb.AppendLine("CRITICAL WARNING:");
+        sb.AppendLine("No assemblers found!");
+        sb.AppendLine("1. Check if PB is on the same grid.");
+        sb.AppendLine("2. Check ownership settings.");
+    }
+
+    foreach (var asm in assemblers)
+    {
+        sb.AppendLine($"[{asm.CustomName}]");
+        
+        // Status Checks
+        if (!asm.IsFunctional) sb.Append(" (DAMAGED)");
+        if (!asm.Enabled) sb.Append(" (OFF)");
+        if (!asm.IsWorking && asm.Enabled && asm.IsFunctional) sb.Append(" (LOW POWER/IDLE)");
+        sb.AppendLine();
+
+        // Queue Check
+        var queue = new List<MyProductionItem>();
+        asm.GetQueue(queue);
+
+        if (queue.Count == 0)
+        {
+            sb.AppendLine(" - Status: QUEUE EMPTY");
+            
+            // Check Input Inventory (Why isn't it producing?)
+            var input = asm.GetInventory(0);
+            if (input.ItemCount > 0)
+            {
+                sb.AppendLine(" - Input Inv: Has Materials");
+            }
+            else
+            {
+                sb.AppendLine(" - Input Inv: Empty");
+            }
+        }
+        else
+        {
+            foreach (var item in queue)
+            {
+                sb.AppendLine($" - {item.BlueprintId.SubtypeName}: {item.Amount:N0}");
+            }
+        }
+        sb.AppendLine("- - - - - - - - -");
+    }
+
+    // Output
+    Echo($"Found: {assemblers.Count} assemblers.");
+    Echo("Check Custom Data for details.");
+    Me.CustomData = sb.ToString();
+}
