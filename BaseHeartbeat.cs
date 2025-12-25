@@ -1,17 +1,45 @@
 /*
- * BASE HEARTBEAT v6.2 - CARBON STEEL FIX
- * * FEATURES:
- * 1. Corrected "Steel" Blueprint name.
- * 2. Paged Debug & Status Displays.
- * 3. Role Separation ([AutoSlave] for Steel).
+ * BASE HEARTBEAT v7.0 (Economy Refactor)
+ * * Performance Changes:
+ * - Runs on Update10 (Fast tick) but uses Time-Slicing.
+ * - Inventory scans, queue checks, and production logic are 
+ * offset to different ticks to prevent CPU spikes.
+ * - LCDs update smoothly without re-calculating data every frame.
+ *
+ * SETUP:
+ * - Place in PB #1.
+ * - LCDs: "Status LCD", "Debug LCD"
+ * - Assemblers named: [AutoAssembler], [AutoSlave], [FuelAssembly], [AutoAmmunition]
  */
 
 const string LCD_NAME = "Status LCD";
-const string DEBUG_LCD_NAME = "Debug LCD"; 
-const double THRESHOLD = 0.40; 
-const int CHECK_INTERVAL = 60; 
+const string DEBUG_LCD_NAME = "Debug LCD";
 
-// --- MASTER CATALOG ---
+const double THRESHOLD = 0.40;       // "critical low" threshold vs target
+
+// --- SCHEDULING CONSTANTS (Ticks @ Update10) ---
+// 6 ticks = ~1 second
+const int CACHE_INTERVAL = 1200;     // Re-fetch blocks every ~3 mins
+const int SCAN_INTERVAL  = 30;       // Scan Inventory/Queues every ~5 seconds
+const int PROD_INTERVAL  = 120;      // Calculate production every ~20 seconds
+const int LCD_INTERVAL   = 6;        // Redraw LCD every ~1 second
+const int DEBUG_PAGE_INTERVAL = 30;  // Switch debug page every ~5 seconds
+
+// --- TRANSLATION LAYER ---
+Dictionary<string, string> ALIASES = new Dictionary<string, string>
+{
+    {"Plastic", "OilToPlastic"},
+    {"Rubber", "OilToRubber"},
+    {"PotassiumPerchlorate", "IceToPerchlorate"},
+    {"Nitre", "IceToPerchlorate"},
+    {"AdvancedCircuit", "Circuit"},
+    {"NeodymiumMagnet", "Magnet"},
+    {"FlashPowder", "Flashpowder"},
+    {"10GHzCPU", "OctocoreComponent"},
+    {"SuitPowerbank", "SuitPowerbank_2"},
+    {"Powerbank", "SuitPowerbank_2"},
+};
+
 // --- MASTER CATALOG ---
 // Format: new ItemReq("InventoryName", "BlueprintName", Target, "Tag"),
 List<ItemReq> CATALOG = new List<ItemReq>
@@ -76,182 +104,254 @@ List<ItemReq> CATALOG = new List<ItemReq>
     new ItemReq("Flashpowder",             "Flashpowder",            10000, "[FuelAssembly]"),
 };
 
-// --- TRANSLATION LAYER ---
-Dictionary<string, string> ALIASES = new Dictionary<string, string>
-{
-    {"Plastic", "OilToPlastic"},
-    {"Rubber", "OilToRubber"},
-    {"PotassiumPerchlorate", "IceToPerchlorate"},
-    {"Nitre", "IceToPerchlorate"},
-    {"AdvancedCircuit", "Circuit"},
-    {"NeodymiumMagnet", "Magnet"},
-    {"FlashPowder", "Flashpowder"},
-    {"10GHzCPU", "OctocoreComponent"},
-    {"SuitPowerbank", "SuitPowerbank_2"},
-    {"Powerbank", "SuitPowerbank_2"}
-    // Removed "Steel" alias because Inventory Name == Blueprint Name
-};
-
 // --- GLOBALS ---
 Dictionary<string, List<IMyAssembler>> assemblers = new Dictionary<string, List<IMyAssembler>>();
 List<IMyTerminalBlock> storage = new List<IMyTerminalBlock>();
-Dictionary<string, double> inventory = new Dictionary<string, double>();
-Dictionary<string, double> queuedCounts = new Dictionary<string, double>(); 
-
-// Vitals Globals
 List<IMyBatteryBlock> batteries = new List<IMyBatteryBlock>();
 List<IMyGasTank> gasTanks = new List<IMyGasTank>();
-List<IMyPowerProducer> engines = new List<IMyPowerProducer>();
 
-int cycle = 0;
+Dictionary<string, double> inventory = new Dictionary<string, double>();     // InvId => amount
+Dictionary<string, double> queuedCounts = new Dictionary<string, double>();  // BpId => amount
+
+long tick = 0;
 int debugPage = 0;
 int debugTimer = 0;
 
 public Program()
 {
-    Runtime.UpdateFrequency = UpdateFrequency.Update100;
-    Init();
-}
-
-void Init()
-{
-    assemblers.Clear();
-    List<IMyAssembler> all = new List<IMyAssembler>();
-    GridTerminalSystem.GetBlocksOfType(all, a => a.IsSameConstructAs(Me));
-    
-    assemblers["[AutoAssembler]"] = all.Where(a => a.CustomName.Contains("[AutoAssembler]")).ToList();
-    assemblers["[AutoSlave]"] = all.Where(a => a.CustomName.Contains("[AutoSlave]")).ToList();
-    assemblers["[FuelAssembly]"] = all.Where(a => a.CustomName.Contains("[FuelAssembly]")).ToList();
-    
-    storage.Clear();
-    GridTerminalSystem.GetBlocksOfType(storage, b => b.IsSameConstructAs(Me) && b.HasInventory);
-    
-    batteries.Clear();
-    GridTerminalSystem.GetBlocksOfType(batteries, b => b.IsSameConstructAs(Me));
-    
-    gasTanks.Clear();
-    GridTerminalSystem.GetBlocksOfType(gasTanks, b => b.IsSameConstructAs(Me));
-
-    engines.Clear();
-    GridTerminalSystem.GetBlocksOfType(engines, b => b.IsSameConstructAs(Me) && b.BlockDefinition.SubtypeId.Contains("Engine"));
+    Runtime.UpdateFrequency = UpdateFrequency.Update10; // Fast tick, but we work sparingly
+    RefreshCache();
 }
 
 public void Main(string argument, UpdateType updateSource)
 {
-    if (argument.ToUpper() == "RESET") {
-        foreach (var list in assemblers.Values) foreach (var asm in list) asm.ClearQueue();
-        queuedCounts.Clear(); Echo("!!! WIPED !!!"); return; 
+    tick++;
+
+    // 1. Argument Handling (Immediate)
+    if (!string.IsNullOrWhiteSpace(argument))
+    {
+        switch (argument.Trim().ToUpper())
+        {
+            case "RESET":
+                DoReset();
+                return;
+            case "REINIT":
+                RefreshCache();
+                Echo("Reinitialized block cache.");
+                return;
+        }
     }
 
-    cycle++;
-    if (cycle % 300 == 0) Init(); 
+    // 2. Scheduled Tasks (Time Sliced)
     
-    ScanInventory();
-    ScanQueues();
-    
-    if (cycle % CHECK_INTERVAL == 0) ManageProduction();
-    
-    debugTimer++;
-    if(debugTimer > 40) { 
-        debugTimer = 0;
-        debugPage++;
+    // Task A: Refresh Blocks (Rarely)
+    if (tick % CACHE_INTERVAL == 0) RefreshCache();
+
+    // Task B: Scan Inventory (Every ~5s, Offset 0)
+    if (tick % SCAN_INTERVAL == 0) ScanInventory();
+
+    // Task C: Scan Queues (Every ~5s, Offset 10)
+    if ((tick + 10) % SCAN_INTERVAL == 0) ScanQueues();
+
+    // Task D: Manage Production (Every ~20s, Offset 20)
+    if ((tick + 20) % PROD_INTERVAL == 0) ManageProduction();
+
+    // Task E: Update LCDs (Every ~1s)
+    if (tick % LCD_INTERVAL == 0)
+    {
+        // Debug page scrolling logic
+        debugTimer++;
+        if (debugTimer > DEBUG_PAGE_INTERVAL) // every ~5s
+        {
+            debugTimer = 0;
+            debugPage++;
+        }
+        UpdateStatusDisplay();
+        UpdateDebugDisplay();
     }
-    
-    UpdateStatusDisplay();
-    UpdateDebugDisplay();
+}
+
+void DoReset()
+{
+    foreach (var list in assemblers.Values)
+        foreach (var asm in list)
+            asm.ClearQueue();
+    queuedCounts.Clear();
+    Echo("!!! WIPED !!!");
+}
+
+void RefreshCache()
+{
+    assemblers.Clear();
+    var all = new List<IMyAssembler>();
+    GridTerminalSystem.GetBlocksOfType(all, a => a.IsSameConstructAs(Me));
+
+    assemblers["[AutoAssembler]"]  = all.Where(a => a.CustomName.Contains("[AutoAssembler]")).ToList();
+    assemblers["[AutoSlave]"]      = all.Where(a => a.CustomName.Contains("[AutoSlave]")).ToList();
+    assemblers["[FuelAssembly]"]   = all.Where(a => a.CustomName.Contains("[FuelAssembly]")).ToList();
+    assemblers["[AutoAmmunition]"] = all.Where(a => a.CustomName.Contains("[AutoAmmunition]")).ToList();
+
+    storage.Clear();
+    GridTerminalSystem.GetBlocksOfType(storage, b => b.IsSameConstructAs(Me) && b.HasInventory);
+
+    batteries.Clear();
+    GridTerminalSystem.GetBlocksOfType(batteries, b => b.IsSameConstructAs(Me));
+
+    gasTanks.Clear();
+    GridTerminalSystem.GetBlocksOfType(gasTanks, b => b.IsSameConstructAs(Me));
 }
 
 void ScanInventory()
 {
     inventory.Clear();
-    foreach (var block in storage) {
-        for (int i = 0; i < block.InventoryCount; i++) {
+
+    foreach (var block in storage)
+    {
+        for (int i = 0; i < block.InventoryCount; i++)
+        {
             var inv = block.GetInventory(i);
-            if (inv == null) continue;
-            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            if (inv == null || inv.ItemCount == 0) continue;
+
+            var items = new List<MyInventoryItem>();
             inv.GetItems(items);
-            foreach (var item in items) {
-                string id = item.Type.SubtypeId;
+
+            foreach (var item in items)
+            {
+                string invId = item.Type.SubtypeId;
                 double amt = (double)item.Amount;
-                AddInv(id, amt);
-                if (ALIASES.ContainsKey(id)) AddInv(ALIASES[id], amt);
-                if (!id.EndsWith("Component")) AddInv(id + "Component", amt);
+
+                AddInv(invId, amt);
+
+                // Inventory aliasing only (explicit)
+                string alias;
+                if (ALIASES.TryGetValue(invId, out alias))
+                    AddInv(alias, amt);
             }
         }
     }
 }
 
-void AddInv(string key, double val) {
-    if (inventory.ContainsKey(key)) inventory[key] += val;
+void AddInv(string key, double val)
+{
+    double cur;
+    if (inventory.TryGetValue(key, out cur)) inventory[key] = cur + val;
     else inventory[key] = val;
 }
 
-void ScanQueues() {
+void ScanQueues()
+{
     queuedCounts.Clear();
-    foreach (var asmList in assemblers.Values) {
-        foreach (var asm in asmList) {
-            if(!asm.IsWorking) continue;
+
+    foreach (var asmList in assemblers.Values)
+    {
+        foreach (var asm in asmList)
+        {
+            if (!asm.IsWorking) continue;
+
             var queue = new List<MyProductionItem>();
             asm.GetQueue(queue);
-            foreach (var item in queue) {
+
+            foreach (var item in queue)
+            {
                 string bp = item.BlueprintId.SubtypeName;
                 double amt = (double)item.Amount;
-                if (queuedCounts.ContainsKey(bp)) queuedCounts[bp] += amt;
+
+                double cur;
+                if (queuedCounts.TryGetValue(bp, out cur)) queuedCounts[bp] = cur + amt;
                 else queuedCounts[bp] = amt;
             }
         }
     }
 }
 
-void ManageProduction() {
-    foreach (var req in CATALOG) {
-        double current = inventory.ContainsKey(req.ID) ? inventory[req.ID] : 0;
+void ManageProduction()
+{
+    foreach (var req in CATALOG)
+    {
+        double current = inventory.ContainsKey(req.InvId) ? inventory[req.InvId] : 0;
         if (current >= req.Target) continue;
-        double pending = queuedCounts.ContainsKey(req.ID) ? queuedCounts[req.ID] : 0;
-        if (pending > 10) continue; 
-        
+
+        double pending = queuedCounts.ContainsKey(req.BpId) ? queuedCounts[req.BpId] : 0;
+        if (pending > 10) continue; // already queued enough
+
         int needed = req.Target - (int)current;
-        int batch = Math.Min(needed, 100); 
-        
-        if (Queue(req.ID, batch, req.Tag)) {
-            if (queuedCounts.ContainsKey(req.ID)) queuedCounts[req.ID] += batch;
-            else queuedCounts[req.ID] = batch;
+        if (needed <= 0) continue;
+
+        int batch = Math.Min(needed, 100);
+
+        if (QueueBlueprint(req.BpId, batch, req.Tag))
+        {
+            queuedCounts[req.BpId] = pending + batch;
         }
     }
 }
 
-bool Queue(string name, int amount, string tag) {
-    if (!assemblers.ContainsKey(tag) || assemblers[tag].Count == 0) return false;
-    IMyAssembler best = null; int minQ = int.MaxValue;
-    foreach (var asm in assemblers[tag]) {
-        if (!asm.IsWorking || !asm.IsFunctional) continue;
-        var q = new List<MyProductionItem>(); asm.GetQueue(q);
-        if (q.Count < minQ) { minQ = q.Count; best = asm; }
+bool QueueBlueprint(string bpSubtype, int amount, string tag)
+{
+    List<IMyAssembler> group;
+    if (!assemblers.TryGetValue(tag, out group) || group.Count == 0) return false;
+
+    IMyAssembler best = null;
+    int minQ = int.MaxValue;
+
+    foreach (var asm in group)
+    {
+        if (!asm.IsFunctional || !asm.Enabled) continue;
+
+        var q = new List<MyProductionItem>();
+        asm.GetQueue(q);
+
+        if (q.Count < minQ)
+        {
+            minQ = q.Count;
+            best = asm;
+        }
     }
+
     if (best == null) return false;
-    try {
-        var bp = MyDefinitionId.Parse($"MyObjectBuilder_BlueprintDefinition/{name}");
+
+    try
+    {
+        var bp = MyDefinitionId.Parse($"MyObjectBuilder_BlueprintDefinition/{bpSubtype}");
         best.AddQueueItem(bp, (MyFixedPoint)amount);
         return true;
-    } catch { return false; }
+    }
+    catch
+    {
+        return false;
+    }
 }
 
-void UpdateStatusDisplay() {
+void UpdateStatusDisplay()
+{
     var lcd = FindLCD(LCD_NAME);
     if (lcd == null) return;
+
     lcd.ContentType = ContentType.TEXT_AND_IMAGE;
-    
+
+    // Batteries
     double totalBatt = 0, maxBatt = 0;
-    foreach(var b in batteries) { totalBatt += b.CurrentStoredPower; maxBatt += b.MaxStoredPower; }
-    double battPct = maxBatt > 0 ? (totalBatt / maxBatt) * 100 : 0;
-    
-    double h2 = 0, o2 = 0;
-    foreach(var t in gasTanks) {
-        if(t.BlockDefinition.SubtypeId.Contains("Hydrogen")) h2 += t.FilledRatio;
-        else o2 += t.FilledRatio;
+    foreach (var b in batteries)
+    {
+        totalBatt += b.CurrentStoredPower;
+        maxBatt += b.MaxStoredPower;
     }
-    if(gasTanks.Count > 0) { h2 /= gasTanks.Count(t => t.BlockDefinition.SubtypeId.Contains("Hydrogen")); h2*=100; }
-    
+    double battPct = (maxBatt > 0) ? (totalBatt / maxBatt) * 100 : 0;
+
+    // Tanks
+    double h2Sum = 0, o2Sum = 0;
+    int h2Count = 0, o2Count = 0;
+
+    foreach (var t in gasTanks)
+    {
+        bool isH2 = t.BlockDefinition.SubtypeId.Contains("Hydrogen");
+        if (isH2) { h2Sum += t.FilledRatio; h2Count++; }
+        else { o2Sum += t.FilledRatio; o2Count++; }
+    }
+
+    double h2Pct = (h2Count > 0) ? (h2Sum / h2Count) * 100 : 0;
+    double o2Pct = (o2Count > 0) ? (o2Sum / o2Count) * 100 : 0;
+
     double fuel = inventory.ContainsKey("Kerosene") ? inventory["Kerosene"] : 0;
     double canvas = inventory.ContainsKey("Canvas") ? inventory["Canvas"] : 0;
     double ice = inventory.ContainsKey("Ice") ? inventory["Ice"] : 0;
@@ -259,60 +359,110 @@ void UpdateStatusDisplay() {
     StringBuilder sb = new StringBuilder();
     sb.AppendLine("╔═ BASE VITALS ═══════════════╗");
     sb.AppendLine($"║ PWR: {DrawBar(battPct)} {battPct:F0}%");
-    sb.AppendLine($"║ H2:  {DrawBar(h2)} {h2:F0}%");
+    sb.AppendLine($"║ H2:  {DrawBar(h2Pct)} {h2Pct:F0}%");
+    sb.AppendLine($"║ O2:  {DrawBar(o2Pct)} {o2Pct:F0}%");
     sb.AppendLine("╚═════════════════════════════╝");
-    sb.AppendLine($"FUEL STORES:");
+
+    sb.AppendLine("FUEL STORES:");
     sb.AppendLine($" Kerosene: {fuel:N0} L");
     sb.AppendLine($" Ice:      {ice:N0} kg");
     sb.AppendLine($" Canvas:   {canvas:N0}");
     sb.AppendLine();
+
     sb.AppendLine("CRITICAL LOW STOCK:");
     var low = CATALOG
-        .Where(c => (inventory.ContainsKey(c.ID) ? inventory[c.ID] : 0) < c.Target * THRESHOLD)
-        .OrderBy(c => (inventory.ContainsKey(c.ID) ? inventory[c.ID] : 0) / (double)c.Target)
+        .Select(c => new
+        {
+            Req = c,
+            Curr = inventory.ContainsKey(c.InvId) ? inventory[c.InvId] : 0
+        })
+        .Where(x => x.Curr < x.Req.Target * THRESHOLD)
+        .OrderBy(x => (x.Req.Target > 0) ? (x.Curr / (double)x.Req.Target) : 1.0)
         .Take(6);
-    foreach (var item in low) {
-        double curr = inventory.ContainsKey(item.ID) ? inventory[item.ID] : 0;
-        string n = item.ID.Length > 12 ? item.ID.Substring(0, 12) : item.ID;
-        sb.AppendLine($"! {n,-12} {curr,4}/{item.Target,-4}");
+
+    foreach (var x in low)
+    {
+        string id = x.Req.InvId;
+        string n = id.Length > 12 ? id.Substring(0, 12) : id;
+        sb.AppendLine($"! {n,-12} {x.Curr,4:0}/{x.Req.Target,-4} [{TrimTag(x.Req.Tag)}]");
     }
+
     lcd.WriteText(sb.ToString());
 }
 
-void UpdateDebugDisplay() {
+void UpdateDebugDisplay()
+{
     var lcd = FindLCD(DEBUG_LCD_NAME);
     if (lcd == null) return;
+
     lcd.ContentType = ContentType.TEXT_AND_IMAGE;
-    
+
     var allItems = inventory.OrderBy(x => x.Key).ToList();
     int pageSize = 18;
-    int totalPages = (int)Math.Ceiling((double)allItems.Count / pageSize);
+    int totalPages = Math.Max(1, (int)Math.Ceiling((double)allItems.Count / pageSize));
     if (debugPage >= totalPages) debugPage = 0;
-    
+
     var pageItems = allItems.Skip(debugPage * pageSize).Take(pageSize);
 
     StringBuilder sb = new StringBuilder();
-    sb.AppendLine($"╔═ DEBUG INV ═══════ PAGE {debugPage+1}/{totalPages} ╗");
-    foreach(var kvp in pageItems) {
-        string name = kvp.Key.Length > 18 ? kvp.Key.Substring(0,18) : kvp.Key;
+    sb.AppendLine($"╔═ DEBUG INV ═══════ PAGE {debugPage + 1}/{totalPages} ╗");
+    foreach (var kvp in pageItems)
+    {
+        string name = kvp.Key.Length > 18 ? kvp.Key.Substring(0, 18) : kvp.Key;
         sb.AppendLine($" {name,-18} : {kvp.Value:N0}");
     }
+
+    sb.AppendLine();
+    sb.AppendLine("QUEUED (Top 5):");
+    foreach (var q in queuedCounts.OrderByDescending(x => x.Value).Take(5))
+    {
+        string name = q.Key.Length > 18 ? q.Key.Substring(0, 18) : q.Key;
+        sb.AppendLine($" {name,-18} : {q.Value:N0}");
+    }
+
     lcd.WriteText(sb.ToString());
 }
 
-string DrawBar(double pct) {
+string DrawBar(double pct)
+{
     int bars = (int)(pct / 10);
+    if (bars < 0) bars = 0;
+    if (bars > 10) bars = 10;
     return $"[{new string('|', bars).PadRight(10, '.')}]";
 }
 
-IMyTextSurface FindLCD(string name) {
+string TrimTag(string tag)
+{
+    if (string.IsNullOrEmpty(tag)) return "";
+    return tag.Replace("[", "").Replace("]", "");
+}
+
+IMyTextSurface FindLCD(string name)
+{
     var b = GridTerminalSystem.GetBlockWithName(name);
-    if (b is IMyTextSurface) return (IMyTextSurface)b;
-    if (b is IMyTextSurfaceProvider) return ((IMyTextSurfaceProvider)b).GetSurface(0);
+    if (b == null) return null;
+
+    var s = b as IMyTextSurface;
+    if (s != null) return s;
+
+    var p = b as IMyTextSurfaceProvider;
+    if (p != null) return p.GetSurface(0);
+
     return null;
 }
 
-public class ItemReq {
-    public string ID; public int Target; public string Tag;
-    public ItemReq(string id, int t, string tag) { ID = id; Target = t; Tag = tag; }
+public class ItemReq
+{
+    public string InvId;
+    public string BpId;
+    public int Target;
+    public string Tag;
+
+    public ItemReq(string invId, string bpId, int target, string tag)
+    {
+        InvId = invId;
+        BpId = bpId;
+        Target = target;
+        Tag = tag;
+    }
 }
