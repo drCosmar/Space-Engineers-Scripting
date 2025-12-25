@@ -33,4 +33,4 @@
 ## Current Status
 *   Nudge controls are implemented for Translation and Rotation.
 *   Nanobot toggle is functional and reading state correctly.
-*   Indicator lights handle multi-tag logic (Green for LG, Blue for SM).
+*   Indicator lights use a single tag `[Indicator]` and change color (Green for LG, Blue for SM) based on the active projector.
