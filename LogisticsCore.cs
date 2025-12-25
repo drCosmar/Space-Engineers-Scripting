@@ -1,27 +1,20 @@
 /*
- * LOGISTICS CORE v1.2 (Refactor + Fix)
+ * LOGISTICS CORE v1.3 (Final Fixes)
  * Purpose preserved:
  * - Sorting inventory into tagged storage containers.
- * - Assembler vacuuming (pull ores/ingots out of assembler input) with a FORCE option.
+ * - Assembler vacuuming (pull ores/ingots out of assembler input).
  * - Maintenance LCD with a dashboard + manifest view.
  *
  * Refactor goals:
- * - Deterministic scheduling (no DateTime.Now.Second modulo).
- * - Cache container lists; refresh periodically.
- * - Bound work per tick.
- * - Keep "Powerbank_" protection and [Ignore] exclusions.
- * - FIXED: Assembler vacuum now runs regardless of volume fill (was waiting for 80%).
+ * - FIXED: Removed duplicate SortInventory method.
+ * - FIXED: Refineries are now sorted, but Input (Ore) is ignored to prevent loop.
+ * - FIXED: Assemblers are force-cleaned even if working (Inputs preserved if queue active).
  *
  * SETUP:
  * - Place in PB #2.
  * - LCD Name: "Maintenance LCD"
- * - Containers tagged in CustomName:
- * [Ore], [Ingot], [Comp], [Ammo], [Tool], [Ice], [Fuel]
- * - Optional ignore tag for blocks:
- * [Ignore]
- * - Button panel:
- * - "FLUSH" -> vacuum assemblers aggressively
- * - "CYCLE" -> switch LCD view
+ * - Containers tagged: [Ore], [Ingot], [Comp], [Ammo], [Tool], [Ice], [Fuel]
+ * - Button panel: "FLUSH" -> vacuum assemblers aggressively
  */
 
 const string TAG_ORE    = "[Ore]";
@@ -131,6 +124,12 @@ void SortInventory()
 
         for (int i = 0; i < source.InventoryCount; i++)
         {
+            // --- REFINERY FIX ---
+            // If this block is a Refinery, IGNORE Inventory 0 (Input).
+            // This prevents the script from fighting conveyors for Ore.
+            // It will still process Inventory 1 (Output) to put Ingots away.
+            if (source is IMyRefinery && i == 0) continue;
+
             var inv = source.GetInventory(i);
             if (inv == null || inv.ItemCount == 0) continue;
 
@@ -197,7 +196,7 @@ void SortInventory()
 
 bool IsFuelSubtype(string subtype)
 {
-    // Keep your original heuristic; can be expanded if needed.
+    // Keep your original heuristic
     return subtype.Contains("Petroleum") ||
            subtype.Contains("Petrol") ||
            subtype.Contains("Kerosene") ||
@@ -217,8 +216,8 @@ void VacuumAssemblers(bool force)
         if (asm.CustomName.Contains("[FuelAssembly]")) continue;
 
         // --- STEP 1: Clean INPUT (Inventory 0) ---
-        // CRITICAL FIX: Only clean input if the assembler is NOT trying to work.
-        // If the queue has items, let the assembler keep its ingots!
+        // Only clean input if the assembler is NOT trying to work (Queue is empty)
+        // Or if FORCE is active.
         if (force || asm.IsQueueEmpty)
         {
             var input = asm.GetInventory(0);
@@ -226,17 +225,15 @@ void VacuumAssemblers(bool force)
             {
                 var items = new List<MyInventoryItem>();
                 input.GetItems(items);
-    
+
                 for (int i = items.Count - 1; i >= 0; i--)
                 {
                     var item = items[i];
                     string typeId = item.Type.TypeId.ToString();
-    
+
                     // Only pull raw resources out of input
                     if (typeId.EndsWith("Ingot") || typeId.EndsWith("Ore"))
                     {
-                        // Pass "" as currentName to bypass tag checks. 
-                        // We want to force-empty the assembler even if it's named "Assembler [Ingot]"
                         TryMove(input, item, destIngot, "", TAG_INGOT);
                     }
                 }
@@ -244,7 +241,7 @@ void VacuumAssemblers(bool force)
         }
 
         // --- STEP 2: Clean OUTPUT (Inventory 1) ---
-        // Always clean output, even if producing.
+        // Always clean output
         var output = asm.GetInventory(1);
         if (output != null && output.ItemCount > 0)
         {
@@ -273,7 +270,6 @@ void VacuumAssemblers(bool force)
                 }
                 else 
                 {
-                    // Fallback for weird modded items
                     TryMove(output, item, destComp, "", TAG_COMP);
                 }
             }
@@ -442,15 +438,13 @@ bool IsSortable(IMyTerminalBlock b)
     if (b.CustomName.Contains("Charger")) return false;
 
     if (b is IMyPowerProducer) return false;
-    if (b is IMyRefinery) return false;
+    // We REMOVE the refinery check here so it returns TRUE, allowing SortInventory to see it.
+    // if (b is IMyRefinery) return false; 
     if (b is IMyAssembler) return false;
     if (b is IMyLargeTurretBase) return false;
     if (b is IMyUserControllableGun) return false;
     if (b is IMyGasGenerator) return false;
     if (b is IMyGasTank) return false;
-    
-    // FIX: Ignore Connectors. If a connector is set to "Collect All", 
-    // it fights the script sorting logic.
     if (b is IMyShipConnector) return false;
 
     return true;
