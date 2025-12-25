@@ -12,68 +12,68 @@ const double THRESHOLD = 0.40;
 const int CHECK_INTERVAL = 60; 
 
 // --- MASTER CATALOG ---
+// --- MASTER CATALOG ---
+// Format: new ItemReq("InventoryName", "BlueprintName", Target, "Tag"),
 List<ItemReq> CATALOG = new List<ItemReq>
 {
     // === [AutoAssembler] BULK ===
-    new ItemReq("SteelPlate",       10000, "[AutoAssembler]"),
-    new ItemReq("InteriorPlate",    6000,  "[AutoAssembler]"),
-    new ItemReq("SmallTube",        5000,  "[AutoAssembler]"),
-    new ItemReq("LargeTube",        2000,  "[AutoAssembler]"),
-    new ItemReq("MetalGrid",        4000,  "[AutoAssembler]"),
-    new ItemReq("GirderComponent",  2000,  "[AutoAssembler]"),
-    new ItemReq("SteelGirder",      1500,  "[AutoAssembler]"),
-    new ItemReq("BulletproofGlass", 2000,  "[AutoAssembler]"),
-    new ItemReq("ConstructionComponent", 8000, "[AutoAssembler]"),
-    
+    new ItemReq("SteelPlate",              "SteelPlate",              10000, "[AutoAssembler]"),
+    new ItemReq("InteriorPlate",           "InteriorPlate",            6000, "[AutoAssembler]"),
+    new ItemReq("SmallTube",               "SmallTube",                5000, "[AutoAssembler]"),
+    new ItemReq("LargeTube",               "LargeTube",                2000, "[AutoAssembler]"),
+    new ItemReq("MetalGrid",               "MetalGrid",                4000, "[AutoAssembler]"),
+    new ItemReq("Girder",                  "GirderComponent",          2000, "[AutoAssembler]"), // Fixed
+    new ItemReq("SteelGirder",             "SteelGirder",              1500, "[AutoAssembler]"),
+    new ItemReq("BulletproofGlass",        "BulletproofGlass",         2000, "[AutoAssembler]"),
+    new ItemReq("Construction",            "ConstructionComponent",    8000, "[AutoAssembler]"), // Fixed
+
     // === [AutoSlave] TECH & ALLOYS ===
-    // NEW: Carbon Steel (Matches your queue report)
-    new ItemReq("Steel", 5000, "[AutoSlave]"), 
+    new ItemReq("Steel",                   "Steel",                   5000, "[AutoSlave]"),
+    new ItemReq("Motor",                   "MotorComponent",           3000, "[AutoSlave]"), // Fixed
+    new ItemReq("Computer",                "ComputerComponent",        2000, "[AutoSlave]"), // Fixed
+    new ItemReq("RadioCommunication",      "RadioCommunicationComponent",100,"[AutoSlave]"), // Fixed
+    new ItemReq("Detector",                "DetectorComponent",        1000, "[AutoSlave]"), // Fixed
+    new ItemReq("Display",                 "Display",                  1500, "[AutoSlave]"),
+    new ItemReq("Explosives",              "ExplosivesComponent",       100, "[AutoSlave]"), // Fixed
+    new ItemReq("Thrust",                  "ThrustComponent",          1000, "[AutoSlave]"), // Fixed
+    new ItemReq("Reactor",                 "ReactorComponent",          500, "[AutoSlave]"), // Fixed
+    new ItemReq("GravityGenerator",        "GravityGeneratorComponent", 500, "[AutoSlave]"), // Fixed
+    new ItemReq("Medical",                 "MedicalComponent",           50, "[AutoSlave]"), // Fixed
+    new ItemReq("SolarCell",               "SolarCell",                1500, "[AutoSlave]"),
+    new ItemReq("PowerCell",               "PowerCell",                 250, "[AutoSlave]"),
 
-    new ItemReq("MotorComponent",     3000, "[AutoSlave]"),
-    new ItemReq("ComputerComponent",  2000, "[AutoSlave]"),
-    new ItemReq("RadioCommunicationComponent", 100, "[AutoSlave]"),
-    new ItemReq("DetectorComponent",  1000, "[AutoSlave]"),
-    new ItemReq("Display",            1500, "[AutoSlave]"),
-    new ItemReq("ExplosivesComponent", 100, "[AutoSlave]"),
-    new ItemReq("ThrustComponent",    1000, "[AutoSlave]"),
-    new ItemReq("ReactorComponent",   500,  "[AutoSlave]"),
-    new ItemReq("GravityGeneratorComponent", 500, "[AutoSlave]"),
-    new ItemReq("MedicalComponent",   50,   "[AutoSlave]"),
-    new ItemReq("SolarCell",          1500, "[AutoSlave]"),
-    new ItemReq("PowerCell",          250,  "[AutoSlave]"),
+    // MODDED / TIER 2 (These usually match, but verify via debug LCD if issues persist)
+    new ItemReq("TitaniumPlate",           "TitaniumPlate",           5000, "[AutoSlave]"),
+    new ItemReq("CompositePlate",          "CompositePlate",          3000, "[AutoSlave]"),
+    new ItemReq("TitaniumTube",            "TitaniumTube",            2000, "[AutoSlave]"),
+    new ItemReq("OctocoreComponent",       "OctocoreComponent",        500, "[AutoSlave]"),
+    new ItemReq("AdvancedMotor",           "AdvancedMotor",           2000, "[AutoSlave]"),
+    new ItemReq("Circuit",                 "Circuit",                 1000, "[AutoSlave]"),
+    new ItemReq("CPU",                     "CPU",                      500, "[AutoSlave]"),
+    new ItemReq("Magnet",                  "Magnet",                   500, "[AutoSlave]"),
+    new ItemReq("Superconductor",          "Superconductor",           450, "[AutoSlave]"),
+    new ItemReq("UltraConductor",          "UltraConductor",           150, "[AutoSlave]"),
+    new ItemReq("Heatsink",                "Heatsink",                 300, "[AutoSlave]"),
+    new ItemReq("LED",                     "LED",                      200, "[AutoSlave]"),
+    new ItemReq("Kevlar",                  "Kevlar",                   200, "[AutoSlave]"),
+    new ItemReq("Nylon",                   "Nylon",                    300, "[AutoSlave]"),
+    new ItemReq("Polycarbonate",           "Polycarbonate",            500, "[AutoSlave]"),
+    new ItemReq("Tyre",                    "Tyre",                     500, "[AutoSlave]"),
+    new ItemReq("SiTyre",                  "SiTyre",                    50, "[AutoSlave]"),
+    new ItemReq("CopperWire",              "CopperWire",              1000, "[AutoSlave]"),
+    new ItemReq("GoldWire",                "GoldWire",                1000, "[AutoSlave]"),
+    new ItemReq("SteelWire",               "SteelWire",                400, "[AutoSlave]"),
+    new ItemReq("Optic",                   "Optic",                    200, "[AutoSlave]"),
 
-    // MODDED / TIER 2
-    new ItemReq("TitaniumPlate",      5000, "[AutoSlave]"),
-    new ItemReq("CompositePlate",     3000, "[AutoSlave]"),
-    new ItemReq("TitaniumTube",       2000, "[AutoSlave]"),
-    new ItemReq("OctocoreComponent",  500,  "[AutoSlave]"),
-    new ItemReq("AdvancedMotor",      2000, "[AutoSlave]"),
-    new ItemReq("Circuit",            1000, "[AutoSlave]"),
-    new ItemReq("CPU",                500,  "[AutoSlave]"),
-    new ItemReq("Magnet",             500,  "[AutoSlave]"),
-    new ItemReq("Superconductor",     450,  "[AutoSlave]"),
-    new ItemReq("UltraConductor",     150,  "[AutoSlave]"),
-    new ItemReq("Heatsink",           300,  "[AutoSlave]"),
-    new ItemReq("LED",                200,  "[AutoSlave]"),
-    new ItemReq("Kevlar",             200,  "[AutoSlave]"),
-    new ItemReq("Nylon",              300,  "[AutoSlave]"),
-    new ItemReq("Polycarbonate",      500,  "[AutoSlave]"),
-    new ItemReq("Tyre",               500,  "[AutoSlave]"),
-    new ItemReq("SiTyre",             50,   "[AutoSlave]"),
-    new ItemReq("CopperWire",         1000, "[AutoSlave]"),
-    new ItemReq("GoldWire",           1000, "[AutoSlave]"),
-    new ItemReq("SteelWire",          400,  "[AutoSlave]"),
-    new ItemReq("Optic",              200,  "[AutoSlave]"),
-    
     // CONVERSIONS
-    new ItemReq("OilToPlastic",       2000, "[AutoSlave]"),
-    new ItemReq("OilToRubber",        2000, "[AutoSlave]"),
-    new ItemReq("IceToPerchlorate",   3000, "[AutoSlave]"),
+    new ItemReq("OilToPlastic",            "OilToPlastic",            2000, "[AutoSlave]"),
+    new ItemReq("OilToRubber",             "OilToRubber",             2000, "[AutoSlave]"),
+    new ItemReq("IceToPerchlorate",        "IceToPerchlorate",        3000, "[AutoSlave]"),
 
     // === [FuelAssembly] CHEMIST ===
-    new ItemReq("Kerosene",           2000, "[FuelAssembly]"),
-    new ItemReq("Gunpowder",          10000, "[FuelAssembly]"),
-    new ItemReq("Flashpowder",        10000, "[FuelAssembly]"),
+    new ItemReq("Kerosene",                "Kerosene",                2000, "[FuelAssembly]"),
+    new ItemReq("Gunpowder",               "Gunpowder",              10000, "[FuelAssembly]"),
+    new ItemReq("Flashpowder",             "Flashpowder",            10000, "[FuelAssembly]"),
 };
 
 // --- TRANSLATION LAYER ---
