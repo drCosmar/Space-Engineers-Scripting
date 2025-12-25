@@ -128,35 +128,40 @@ void SortInventory()
 
 void VacuumAssemblers(bool force)
 {
-    // Finds assemblers hoarding ingots and pushes them back to [Ingot] storage
-    var destIngot = GetContainersWithTag(TAG_INGOT);
+    // Push ores/ingots from assembler INPUT inventory back to [Ingot] storage.
     if (destIngot.Count == 0) return;
 
-    var assemblers = new List<IMyAssembler>();
-    GridTerminalSystem.GetBlocksOfType(assemblers, b => b.IsSameConstructAs(Me));
-
-    foreach(var asm in assemblers)
+    foreach (var asm in assemblers)
     {
         // Don't clean Fuel Assemblies (Chemists)
         if (asm.CustomName.Contains("[FuelAssembly]")) continue;
 
         var input = asm.GetInventory(0);
-        double fill = (double)input.CurrentVolume / (double)input.MaxVolume;
+        if (input == null) continue;
 
-        // CRITERIA: If >80% full (or forced), start cleaning until 50%
-        if (force || fill > 0.8)
+        // FIX: Changed from volume > 0.8 to ItemCount > 0.
+        // The previous logic waited until the assembler was 80% full to clean, 
+        // which rarely happens on modded/dedicated servers.
+        if (force || input.ItemCount > 0)
         {
-            List<MyInventoryItem> items = new List<MyInventoryItem>();
+            var items = new List<MyInventoryItem>();
             input.GetItems(items);
-            foreach(var item in items)
+
+            // Iterating backwards is safer when moving items out of a list
+            for (int i = items.Count - 1; i >= 0; i--)
             {
-                // Only pull Ingots/Ore
-                if (item.Type.TypeId.ToString().EndsWith("Ingot") || item.Type.TypeId.ToString().EndsWith("Ore"))
+                var item = items[i];
+                string typeId = item.Type.TypeId.ToString();
+
+                if (typeId.EndsWith("Ingot") || typeId.EndsWith("Ore"))
                 {
-                    // Move to Storage
-                    foreach(var target in destIngot)
+                    foreach (var target in destIngot)
                     {
-                        if (input.TransferItemTo(target.GetInventory(0), item)) break;
+                        var destInv = target.GetInventory(0);
+                        if (destInv == null || destInv.IsFull) continue;
+
+                        if (input.TransferItemTo(destInv, item))
+                            break;
                     }
                 }
             }
